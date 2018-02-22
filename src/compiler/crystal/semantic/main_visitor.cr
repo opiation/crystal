@@ -1507,8 +1507,8 @@ module Crystal
       expected_return_type = proc_type.return_type
       expected_return_type = @program.nil if expected_return_type.void?
 
-      proc_def = Def.new("->", proc_args, block.body)
-      proc_literal = ProcLiteral.new(proc_def).at(node.location)
+      proc_def = Def.new("->", proc_args, block.body).at(node)
+      proc_literal = ProcLiteral.new(proc_def).at(node)
       proc_literal.expected_return_type = expected_return_type
       proc_literal.force_nil = true if expected_return_type.nil_type?
       proc_literal.accept self
@@ -1536,11 +1536,11 @@ module Crystal
 
       new_call = Call.new(node.obj, "new").at(node.location)
 
-      new_assign = Assign.new(Var.new(temp_name), new_call)
+      new_assign = Assign.new(Var.new(temp_name).at(node), new_call).at(node)
       exps << new_assign
 
       named_args.each do |named_arg|
-        assign_call = Call.new(Var.new(temp_name), "#{named_arg.name}=", named_arg.value)
+        assign_call = Call.new(Var.new(temp_name).at(named_arg), "#{named_arg.name}=", named_arg.value).at(named_arg)
         if loc = named_arg.location
           assign_call.location = loc
           assign_call.name_column_number = loc.column_number
@@ -1548,9 +1548,9 @@ module Crystal
         exps << assign_call
       end
 
-      exps << Var.new(temp_name)
+      exps << Var.new(temp_name).at(node)
 
-      expanded = Expressions.new(exps)
+      expanded = Expressions.new(exps).at(node)
       expanded.accept self
 
       node.bind_to expanded
@@ -1742,7 +1742,7 @@ module Crystal
         target = exp.target
         return target if target.is_a?(Var)
       when Expressions
-        return unless exp = single_expression(exp)
+        return unless exp = exp.single_expression?
         return get_expression_var(exp)
       end
       nil
@@ -1850,13 +1850,13 @@ module Crystal
       # block is when the condition is a Var (in the else it must be
       # nil), IsA (in the else it's not that type), RespondsTo
       # (in the else it doesn't respond to that message) or Not.
-      case cond = single_expression(node.cond) || node.cond
+      case cond = node.cond.single_expression
       when Var, IsA, RespondsTo, Not
         filter_vars cond_type_filters, &.not
       when Or
         # Try to apply boolean logic: `!(a || b)` is `!a && !b`
-        cond_left = single_expression(cond.left) || cond.left
-        cond_right = single_expression(cond.right) || cond.right
+        cond_left = cond.left.single_expression
+        cond_right = cond.right.single_expression
 
         #  We can't deduce anything for sub && or || expressions
         or_left_type_filters = nil if cond_left.is_a?(And) || cond_left.is_a?(Or)
@@ -2026,7 +2026,7 @@ module Crystal
         node.body.accept self
       end
 
-      cond = single_expression(node.cond) || node.cond
+      cond = node.cond.single_expression
 
       endless_while = cond.true_literal?
       merge_while_vars cond, endless_while, before_cond_vars_copy, before_cond_vars, after_cond_vars, @vars, node.break_vars
@@ -2158,7 +2158,7 @@ module Crystal
       when Call
         return get_while_cond_assign_target(node.obj)
       when Expressions
-        return unless node = single_expression(node)
+        return unless node = node.single_expression?
         return get_while_cond_assign_target(node)
       end
 
@@ -2190,16 +2190,6 @@ module Crystal
         filtered_var.bind_to(existing_var.filtered_by(yield filter))
         @vars[name] = filtered_var
       end
-    end
-
-    def single_expression(node)
-      result = nil
-
-      while node.is_a?(Expressions) && node.expressions.size == 1
-        result = node = node[0]
-      end
-
-      result
     end
 
     def end_visit(node : Break)
@@ -2805,19 +2795,16 @@ module Crystal
 
         case type
         when GenericClassType
-          type_name = type.name.split "::"
-
-          path = Path.global(type_name).at(node.location)
+          generic_type = TypeNode.new(type).at(node.location)
           type_of = TypeOf.new(node.elements).at(node.location)
-          generic = Generic.new(path, type_of).at(node.location)
+
+          generic = Generic.new(generic_type, type_of).at(node.location)
 
           node.name = generic
         when GenericClassInstanceType
           # Nothing
         else
-          type_name = type.to_s.split "::"
-          path = Path.global(type_name).at(node.location)
-          node.name = path
+          node.name = TypeNode.new(name.type).at(node.location)
         end
 
         expand_named(node)
@@ -2833,22 +2820,16 @@ module Crystal
 
         case type
         when GenericClassType
-          type_name = type.name.split "::"
-
-          path = Path.global(type_name).at(node.location)
+          generic_type = TypeNode.new(type).at(node.location)
           type_of_keys = TypeOf.new(node.entries.map { |x| x.key.as(ASTNode) }).at(node.location)
           type_of_values = TypeOf.new(node.entries.map { |x| x.value.as(ASTNode) }).at(node.location)
-          generic = Generic.new(path, [type_of_keys, type_of_values] of ASTNode).at(node.location)
+          generic = Generic.new(generic_type, [type_of_keys, type_of_values] of ASTNode).at(node.location)
 
           node.name = generic
         when GenericClassInstanceType
           # Nothing
         else
-          type_name = type.to_s.split "::"
-
-          path = Path.global(type_name).at(node.location)
-
-          node.name = path
+          node.name = TypeNode.new(name.type).at(node.location)
         end
 
         expand_named(node)

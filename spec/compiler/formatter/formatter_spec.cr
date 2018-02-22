@@ -344,6 +344,7 @@ describe Crystal::Formatter do
   assert_format "a = case 1\nwhen 2\n3\nelse\n4\nend", "a = case 1\n    when 2\n      3\n    else\n      4\n    end"
   assert_format "a = \nif 1\n2\nend", "a =\n  if 1\n    2\n  end"
   assert_format "a, b = \nif 1\n2\nend", "a, b =\n  if 1\n    2\n  end"
+  assert_format "a = b = 1\na, b =\n  b, a"
 
   assert_format %(require   "foo"), %(require "foo")
 
@@ -470,6 +471,8 @@ describe Crystal::Formatter do
   assert_format "case  1 \n when  .foo? \n 3 \n end", "case 1\nwhen .foo?\n  3\nend"
   assert_format "case 1\nwhen 1 then\n2\nwhen 3\n4\nend", "case 1\nwhen 1\n  2\nwhen 3\n  4\nend"
   assert_format "case  1 \n when 2 \n 3 \n else 4 \n end", "case 1\nwhen 2\n  3\nelse 4\nend"
+  assert_format "case 1\nwhen 1, # 1\n     2, # 2\n     3  # 3\n  1\nend"
+  assert_format "a = case 1\n    when 1, # 1\n         2, # 2\n         3  # 3\n      1\n    end"
   assert_format "a = 1\ncase\nwhen 2\nelse\n  a /= 3\nend"
 
   assert_format "select   \n when  foo \n 2 \n end", "select\nwhen foo\n  2\nend"
@@ -880,6 +883,9 @@ describe Crystal::Formatter do
   assert_format "<<-HTML\n  hello \n  world   \n  HTML"
   assert_format "  <<-HTML\n    hello \n    world   \n    HTML", "<<-HTML\n  hello \n  world   \n  HTML"
 
+  assert_format "x, y = <<-FOO, <<-BAR\n  hello\n  FOO\n  world\n  BAR"
+  assert_format "x, y, z = <<-FOO, <<-BAR, <<-BAZ\n  hello\n  FOO\n  world\n  BAR\n  qux\nBAZ"
+
   assert_format "#!shebang\n1 + 2"
 
   assert_format "   {{\n1 + 2 }}", "{{\n  1 + 2\n}}"
@@ -900,6 +906,8 @@ describe Crystal::Formatter do
 
   assert_format "foo.[]"
   assert_format "foo.[1]"
+  assert_format "foo.[] = 1"
+  assert_format "foo.[1, 2] = 3"
 
   assert_format "@foo : Int32 # comment\n\ndef foo\nend"
   assert_format "getter foo # comment\n\ndef foo\nend"
@@ -1026,9 +1034,6 @@ describe Crystal::Formatter do
 
   assert_format "lib Foo\n  {% if 1 %}\n    2\n  {% end %}\nend\n\nmacro bar\n  1\nend"
 
-  assert_format %(puts(<<-FOO\n1\nFOO, 2))
-  assert_format %(puts <<-FOO\n1\nFOO, 2)
-
   assert_format "x : Int32 |\nString", "x : Int32 |\n    String"
 
   assert_format %(foo("bar" \\\n"baz")), %(foo("bar" \\\n    "baz"))
@@ -1094,6 +1099,7 @@ describe Crystal::Formatter do
   assert_format "1 \\\nrescue 2", "1 \\\n  rescue 2"
   assert_format "1 \\\nensure 2", "1 \\\n  ensure 2"
   assert_format "foo bar, \\\nbaz", "foo bar,\n  baz"
+  assert_format "x 1, \\\n  2", "x 1,\n  2"
 
   assert_format "alias X = ((Y, Z) ->)"
 

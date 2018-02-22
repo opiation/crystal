@@ -145,7 +145,7 @@ abstract class IO
     # reader.gets # => "hello"
     # reader.gets # => "world"
     # ```
-    def self.pipe(read_blocking = false, write_blocking = false)
+    def self.pipe(read_blocking = false, write_blocking = false) : {IO::FileDescriptor, IO::FileDescriptor}
       pipe_fds = uninitialized StaticArray(LibC::Int, 2)
       if LibC.pipe(pipe_fds) != 0
         raise Errno.new("Could not create pipe")
@@ -1115,7 +1115,7 @@ abstract class IO
   # The `IO` class raises on this method, but some subclasses, notable
   # `File` and `IO::Memory` implement it.
   #
-  # Mutliple sections can be read concurrently.
+  # Multiple sections can be read concurrently.
   def read_at(offset, bytesize, &block)
     raise Error.new "Unable to read_at"
   end

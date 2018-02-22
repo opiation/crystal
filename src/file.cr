@@ -34,6 +34,36 @@ class File < IO::FileDescriptor
 
   getter path : String
 
+  # Returns a `File::Stat` object for the file given by *path* or returns `nil`
+  # if the file does not exist. Raises `Errno` in case of an error. In case of
+  # a symbolic link it is followed and information about the target is returned.
+  #
+  # ```
+  # File.write("foo", "foo")
+  # File.stat?("foo").try(&.size) # => 3
+  # File.stat?("non_existent")    # => nil
+  # ```
+  def self.stat?(path : String) : Stat?
+    Crystal::System::File.stat?(path)
+  end
+
+  # Returns a `File::Stat` object for the file given by *path* or returns `nil`
+  # if the file does not exist. Raises `Errno` in case of an error. In case of
+  # a symbolic link information about the link itself is returned.
+  #
+  # ```
+  # File.write("foo", "foo")
+  # File.lstat?("foo").try(&.size) # => 3
+  #
+  # File.symlink("foo", "bar")
+  # File.lstat?("bar").try(&.symlink?) # => true
+  #
+  # File.lstat?("non_existent") # => nil
+  # ```
+  def self.lstat?(path : String) : Stat?
+    Crystal::System::File.lstat?(path)
+  end
+
   # Returns a `File::Stat` object for the file given by *path* or raises
   # `Errno` in case of an error. In case of a symbolic link
   # it is followed and information about the target is returned.
@@ -44,12 +74,12 @@ class File < IO::FileDescriptor
   # File.stat("foo").mtime # => 2015-09-23 06:24:19 UTC
   # ```
   def self.stat(path) : Stat
-    Crystal::System::File.stat(path)
+    stat?(path) || raise Errno.new("Unable to get stat for #{path.inspect}")
   end
 
   # Returns a `File::Stat` object for the file given by *path* or raises
   # `Errno` in case of an error. In case of a symbolic link
-  # information about it is returned.
+  # information about the link itself is returned.
   #
   # ```
   # File.write("foo", "foo")
@@ -57,7 +87,7 @@ class File < IO::FileDescriptor
   # File.lstat("foo").mtime # => 2015-09-23 06:24:19 UTC
   # ```
   def self.lstat(path) : Stat
-    Crystal::System::File.lstat(path)
+    lstat?(path) || raise Errno.new("Unable to get stat for #{path.inspect}")
   end
 
   # Returns `true` if *path* exists else returns `false`
@@ -72,6 +102,20 @@ class File < IO::FileDescriptor
     Crystal::System::File.exists?(path)
   end
 
+  # Returns the size of *filename* bytes. Raises `Errno` if the file at *path*
+  # does not exist.
+  #
+  # ```
+  # File.size("foo") # raises Errno
+  # File.write("foo", "foo")
+  # File.size("foo") # => 3
+  # ```
+  def self.size(filename) : UInt64
+    stat(filename).size
+  rescue ex : Errno
+    raise Errno.new("Error determining size of #{filename.inspect}", ex.errno)
+  end
+
   # Returns `true` if the file at *path* is empty, otherwise returns `false`.
   # Raises `Errno` if the file at *path* does not exist.
   #
@@ -82,7 +126,7 @@ class File < IO::FileDescriptor
   # File.empty?("foo") # => false
   # ```
   def self.empty?(path) : Bool
-    Crystal::System::File.empty?(path)
+    size(path) == 0
   end
 
   # Returns `true` if *path* is readable by the real user id of this process else returns `false`.
@@ -125,7 +169,11 @@ class File < IO::FileDescriptor
   # File.file?("foobar") # => false
   # ```
   def self.file?(path) : Bool
-    Crystal::System::File.file?(path)
+    if stat = stat?(path)
+      stat.file?
+    else
+      false
+    end
   end
 
   # Returns `true` if the given *path* exists and is a directory.
@@ -306,6 +354,209 @@ class File < IO::FileDescriptor
     end
   end
 
+  class BadPatternError < Exception
+  end
+
+  # Matches *path* against *pattern*.
+  #
+  # The pattern syntax is similar to shell filename globbing. It may contain the following metacharacters:
+  #
+  # * `*` matches an unlimited number of arbitrary characters excluding `/`.
+  #   * `"*"` matches all regular files.
+  #   * `"c*"` matches all files beginning with `c`.
+  #   * `"*c"` matches all files ending with `c`.
+  #   * `"*c*"` matches all files that have `c` in them (including at the beginning or end).
+  # * `**` matches an unlimited number of arbitrary charachters including `/`.
+  # * `?` matches any one charachter excluding `/`.
+  # * character sets:
+  #   * `[abc]` matches any one of these character.
+  #   * `[^abc]` matches any one character other than these.
+  #   * `[a-z]` matches any one charachter in the range.
+  # * `{a,b}` matches subpattern `a` or `b`.
+  # * `\\` escapes the next character.
+  #
+  # NOTE: Only `/` is recognized as path separator in both *pattern* and *path*.
+  def self.match?(pattern : String, path : String)
+    expanded_patterns = [] of String
+    File.expand_brace_pattern(pattern, expanded_patterns)
+
+    expanded_patterns.each do |expanded_pattern|
+      return true if match_single_pattern(expanded_pattern, path)
+    end
+    false
+  end
+
+  private def self.match_single_pattern(pattern : String, path : String)
+    # linear-time algorithm adapted from https://research.swtch.com/glob
+    preader = Char::Reader.new(pattern)
+    sreader = Char::Reader.new(path)
+    next_ppos = 0
+    next_spos = 0
+    strlen = path.bytesize
+    escaped = false
+
+    while true
+      pnext = preader.has_next?
+      snext = sreader.has_next?
+
+      return true unless pnext || snext
+
+      if pnext
+        pchar = preader.current_char
+        char = sreader.current_char
+
+        case {pchar, escaped}
+        when {'\\', false}
+          escaped = true
+          preader.next_char
+          next
+        when {'?', false}
+          if snext && char != '/'
+            preader.next_char
+            sreader.next_char
+            next
+          end
+        when {'*', false}
+          double_star = preader.peek_next_char == '*'
+          if char == '/' && !double_star
+            preader.next_char
+            next_spos = 0
+            next
+          else
+            next_ppos = preader.pos
+            next_spos = sreader.pos + sreader.current_char_width
+            preader.next_char
+            preader.next_char if double_star
+            next
+          end
+        when {'[', false}
+          pnext = preader.has_next?
+
+          character_matched = false
+          character_set_open = true
+          escaped = false
+          inverted = false
+          case preader.peek_next_char
+          when '^'
+            inverted = true
+            preader.next_char
+          when ']'
+            raise BadPatternError.new "Invalid character set: empty character set"
+          end
+
+          while pnext
+            pchar = preader.next_char
+            case {pchar, escaped}
+            when {'\\', false}
+              escaped = true
+            when {']', false}
+              character_set_open = false
+              break
+            when {'-', false}
+              raise BadPatternError.new "Invalid character set: missing range start"
+            else
+              escaped = false
+              if preader.has_next? && preader.peek_next_char == '-'
+                preader.next_char
+                range_end = preader.next_char
+                case range_end
+                when ']'
+                  raise BadPatternError.new "Invalid character set: missing range end"
+                when '\\'
+                  range_end = preader.next_char
+                end
+                range = (pchar..range_end)
+                character_matched = true if range.includes?(char)
+              elsif char == pchar
+                character_matched = true
+              end
+            end
+            pnext = preader.has_next?
+            false
+          end
+          raise BadPatternError.new "Invalid character set: unterminated character set" if character_set_open
+
+          if character_matched != inverted && snext
+            preader.next_char
+            sreader.next_char
+            next
+          end
+        else
+          escaped = false
+
+          if snext && sreader.current_char == pchar
+            preader.next_char
+            sreader.next_char
+            next
+          end
+        end
+      end
+
+      if 0 < next_spos <= strlen
+        preader.pos = next_ppos
+        sreader.pos = next_spos
+        next
+      end
+
+      raise BadPatternError.new "Empty escape character" if escaped
+
+      return false
+    end
+  end
+
+  # :nodoc:
+  def self.expand_brace_pattern(pattern : String, expanded)
+    reader = Char::Reader.new(pattern)
+
+    lbrace = nil
+    rbrace = nil
+    alt_start = nil
+
+    alternatives = [] of String
+
+    nest = 0
+    escaped = false
+    reader.each do |char|
+      case {char, escaped}
+      when {'{', false}
+        lbrace = reader.pos if nest == 0
+        nest += 1
+      when {'}', false}
+        nest -= 1
+
+        if nest == 0
+          rbrace = reader.pos
+          start = (alt_start || lbrace).not_nil! + 1
+          alternatives << pattern.byte_slice(start, reader.pos - start)
+          break
+        end
+      when {',', false}
+        if nest == 1
+          start = (alt_start || lbrace).not_nil! + 1
+          alternatives << pattern.byte_slice(start, reader.pos - start)
+          alt_start = reader.pos
+        end
+      when {'\\', false}
+        escaped = true
+      else
+        escaped = false
+      end
+    end
+
+    if lbrace && rbrace
+      front = pattern.byte_slice(0, lbrace)
+      back = pattern.byte_slice(rbrace + 1)
+
+      alternatives.each do |alt|
+        brace_pattern = {front, alt, back}.join
+
+        expand_brace_pattern brace_pattern, expanded
+      end
+    else
+      expanded << pattern
+    end
+  end
+
   # Resolves the real path of *path* by following symbolic links.
   def self.real_path(path) : String
     Crystal::System::File.real_path(path)
@@ -324,7 +575,11 @@ class File < IO::FileDescriptor
 
   # Returns `true` if the *path* is a symbolic link.
   def self.symlink?(path) : Bool
-    Crystal::System::File.symlink?(path)
+    if stat = lstat?(path)
+      stat.symlink?
+    else
+      false
+    end
   end
 
   # Opens the file named by *filename*. If a file is being created, its initial
@@ -474,11 +729,6 @@ class File < IO::FileDescriptor
     end
   end
 
-  # Returns the size of *filename* bytes.
-  def self.size(filename) : UInt64
-    stat(filename.check_no_null_byte).size
-  end
-
   # Moves *old_filename* to *new_filename*.
   #
   # ```
@@ -520,7 +770,7 @@ class File < IO::FileDescriptor
   end
 
   # Yields an `IO` to read a section inside this file.
-  # Mutliple sections can be read concurrently.
+  # Multiple sections can be read concurrently.
   def read_at(offset, bytesize, &block)
     self_bytesize = self.size
 

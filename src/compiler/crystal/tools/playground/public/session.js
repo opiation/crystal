@@ -190,7 +190,7 @@ Playground.Inspector = function(session, line) {
       row.append($("<td>").text(message.data[labels[j]]));
     }
 
-    row.append($("<td>").text(message.value));
+    row.append($("<td>").html("<pre><code>" + message.html_value + "</code></pre>"));
     row.append($("<td>").text(message.value_type));
     tableBody.append(row);
   }
@@ -297,7 +297,8 @@ Playground.Session = function(options) {
   this.editor._playgroundSession = this;
 
   this.connect = function() {
-    this.ws = new WebSocket("ws://" + location.host + "/client");
+    var socketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    this.ws = new WebSocket(socketProtocol + "//" + location.host + "/client");
 
     this.ws.onopen = function() {
       this._triggerReady();

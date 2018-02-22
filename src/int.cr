@@ -296,6 +296,17 @@ struct Int
     self >> bit & 1
   end
 
+  # Returns `true` if all bits in *mask* are set on `self`.
+  #
+  # ```
+  # 0b0110.bits_set?(0b0110) # => true
+  # 0b1101.bits_set?(0b0111) # => false
+  # 0b1101.bits_set?(0b1100) # => true
+  # ```
+  def bits_set?(mask)
+    (self & mask) == mask
+  end
+
   def gcd(other : Int)
     self == 0 ? other.abs : (other % self).gcd(self)
   end
@@ -681,10 +692,7 @@ struct Int128
   end
 
   def popcount
-    # TODO: use after Crystal 0.23.1
-    # Intrinsics.popcount128(self)
-    v1, v2 = self.unsafe_as({Int64, Int64})
-    Int128.new(v1.popcount + v2.popcount)
+    Intrinsics.popcount128(self)
   end
 
   def clone
@@ -795,10 +803,7 @@ struct UInt128
   end
 
   def popcount
-    # TODO: use after Crystal 0.23.1
-    # Intrinsics.popcount128(self)
-    v1, v2 = self.unsafe_as({UInt64, UInt64})
-    UInt128.new(v1.popcount + v2.popcount)
+    Intrinsics.popcount128(self)
   end
 
   def clone

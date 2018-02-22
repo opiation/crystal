@@ -45,6 +45,16 @@ module Crystal
       end_line : Int32,
       difference : Int32
 
+    record HeredocInfo,
+      node : StringInterpolation,
+      token : Token,
+      line : Int32,
+      column : Int32,
+      indent : Int32,
+      string_continuation : Int32 do
+      include Lexer::HeredocItem
+    end
+
     @lexer : Lexer
     @comment_columns : Array(Int32?)
     @indent : Int32
@@ -86,8 +96,7 @@ module Crystal
       @indent = 0
       @line = 0
       @column = 0
-      @token = @lexer.token
-      @token = next_token
+      @token = @lexer.next_token
 
       @output = IO::Memory.new(source.bytesize)
       @line_output = IO::Memory.new
@@ -500,19 +509,30 @@ module Crystal
     end
 
     def visit(node : StringInterpolation)
+      if @token.delimiter_state.kind == :heredoc
+        # For heredoc, only write the start: on a newline will print it
+        @lexer.heredocs << {@token.delimiter_state, HeredocInfo.new(node, @token.dup, @line, @column, @indent, @string_continuation)}
+        write @token.raw
+        next_token
+        return false
+      end
+
       check :DELIMITER_START
 
-      column = @column
-      old_indent = @indent
-      old_string_continuation = @string_continuation
-      is_regex = @token.delimiter_state.kind == :regex
-      indent_difference = @token.column_number - (@column + 1)
+      visit_string_interpolation(node, @token, @line, @column, @indent, @string_continuation)
+    end
 
-      write @token.raw
+    def visit_string_interpolation(node, token, line, column, old_indent, old_string_continuation, wrote_token = false)
+      @token = token
+
+      is_regex = token.delimiter_state.kind == :regex
+      indent_difference = token.column_number - (column + 1)
+
+      write token.raw unless wrote_token
       next_string_token
 
-      delimiter_state = @token.delimiter_state
-      is_heredoc = @token.delimiter_state.kind == :heredoc
+      delimiter_state = token.delimiter_state
+      is_heredoc = token.delimiter_state.kind == :heredoc
       @last_is_heredoc = is_heredoc
 
       heredoc_line = @line
@@ -613,6 +633,26 @@ module Crystal
         write @token.raw
         next_string_token
       end
+    end
+
+    private def consume_heredocs
+      @consuming_heredocs = true
+      @lexer.heredocs.reverse!
+      while heredoc = @lexer.heredocs.pop?
+        consume_heredoc(heredoc[0], heredoc[1].as(HeredocInfo))
+        write_line unless @lexer.heredocs.empty?
+      end
+      @consuming_heredocs = false
+    end
+
+    private def consume_heredoc(delimiter_state, info)
+      visit_string_interpolation(
+        info.node,
+        info.token,
+        info.line,
+        info.column,
+        info.indent, info.string_continuation,
+        wrote_token: true)
     end
 
     def visit(node : RegexLiteral)
@@ -1012,7 +1052,7 @@ module Crystal
     end
 
     def visit(node : Generic)
-      name = node.name
+      name = node.name.as(Path)
       first_name = name.global? && name.names.size == 1 && name.names.first
 
       if name.global? && @token.type == :"::"
@@ -2228,6 +2268,31 @@ module Crystal
         return false
       end
 
+      # This is for foo.[bar] = baz
+      if node.name == "[]=" && @token.type == :"["
+        write "["
+        next_token_skip_space_or_newline
+        args = node.args
+        last_arg = args.pop
+        format_args args, true, node.named_args
+        write_token :"]"
+        skip_space_or_newline
+        write " ="
+        next_token_skip_space
+        accept_assign_value_after_equals last_arg
+        return false
+      end
+
+      # This is for foo.[] = bar
+      if node.name == "[]=" && @token.type == :"[]"
+        write_token :"[]"
+        next_token_skip_space_or_newline
+        write " ="
+        next_token_skip_space
+        accept_assign_value_after_equals node.args.last
+        return false
+      end
+
       current_multiline_call_indent = @multiline_call_indent
 
       assignment = node.name.ends_with?('=') && node.name.chars.any?(&.ascii_letter?)
@@ -2405,8 +2470,8 @@ module Crystal
                 write " "
               end
             end
-            skip_space_or_newline
           end
+          skip_space_or_newline
         end
       end
 
@@ -3281,9 +3346,9 @@ module Crystal
             write ","
             slash_is_regex!
             next_token
-            skip_space
-            if @token.type == :NEWLINE
-              write_line
+            found_comment = skip_space
+            if found_comment || @token.type == :NEWLINE
+              write_line unless found_comment
               skip_space_or_newline
               next_needs_indent = true
             else
@@ -3510,19 +3575,24 @@ module Crystal
 
       write_token " ", :"="
       skip_space
-      if @token.type == :NEWLINE && node.values.size == 1
+      if @token.type == :NEWLINE
         next_token_skip_space_or_newline
         write_line
-        write_indent(@indent + 2, node.values.first)
+        if node.values.size == 1
+          write_indent(@indent + 2, node.values.first)
+          return false
+        else
+          write_indent(@indent + 2)
+        end
       else
         write " "
-        format_mutli_assign_values node.values
       end
+      format_multi_assign_values node.values
 
       false
     end
 
-    def format_mutli_assign_values(values)
+    def format_multi_assign_values(values)
       if values.size == 1
         accept_assign_value values.first
       else
@@ -3982,14 +4052,16 @@ module Crystal
       io << @output
     end
 
-    def maybe_reset_passed_backslash_newline
-    end
-
     def next_token
       current_line_number = @lexer.line_number
       @token = @lexer.next_token
       if @token.type == :DELIMITER_START
         increment_lines(@lexer.line_number - current_line_number)
+      elsif @token.type == :NEWLINE
+        if !@lexer.heredocs.empty? && !@consuming_heredocs
+          write_line
+          consume_heredocs
+        end
       end
       @token
     end
